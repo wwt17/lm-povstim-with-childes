@@ -119,31 +119,26 @@ def split_data(data):
 # In[5]:
 
 
+from collections import Counter
+
 def count_frequencies(data):
-    frequencies = {}
-    for filename,line in data:
-        for word in line:
-            if word in frequencies:
-                frequencies[word] += 1
-            else:
-                frequencies[word] = 1
+    frequencies = Counter()
+    for filename, line in data:
+        frequencies.update(line)
     return frequencies
 
 # words with frequency > cutoff
-def make_vocab(data, cutoff):
-    frequencies = count_frequencies(data)
-    high_frequency_tokens = set([token for token in frequencies if frequencies[token] > cutoff])
-    return high_frequency_tokens
+def make_vocab(data, cutoff=0):
+    vocab = count_frequencies(data)
+    vocab = sorted(vocab.items(), key = lambda item: (-item[1], item[0]))
+    if cutoff:
+        vocab = list(filter(lambda item: item[1] > cutoff, vocab))
+    return {word: idx for idx, (word, freq) in enumerate(vocab)}
 
-def unk(data, vocab):
+def unk(data, vocab, unk_token="<unk>"):
     unked_data = []
     for filename, line in data:
-        unked_line = []
-        for word in line:
-            if word in vocab:
-                unked_line.append(word)
-            else:
-                unked_line.append("<unk>")
+        unked_line = [(word if word in vocab else unk_token) for word in line]
         unked_data.append((filename, unked_line)) 
     return unked_data
 
@@ -151,28 +146,25 @@ def unk(data, vocab):
 # In[ ]:
 
 
-def clean_and_unk(train, valid, test, excluded):
+def clean_and_unk(dataset, unking=False, unk_token="<unk>", cutoff=0):
     # Clean all the datasets
-    train_cleaned = clean_and_listify(train)
-    valid_cleaned = clean_and_listify(valid)
-    test_cleaned = clean_and_listify(test)
-    excluded_cleaned = clean_and_listify(excluded)
+    dataset = {split: clean_and_listify(data) for split, data in dataset.items()}
 
     # Split possessives and contractions in all the datasets
-    train_split = split_data(train_cleaned)
-    valid_split = split_data(valid_cleaned)
-    test_split = split_data(test_cleaned)
-    excluded_split = split_data(excluded_cleaned)
+    dataset = {split: split_data(data) for split, data in dataset.items()}
 
     # Create the vocab: All words that occurs more than 2 times
     # in the training set
-    train_vocab = make_vocab(train_split, cutoff=2)
+    vocab = make_vocab(dataset["train"], cutoff=cutoff)
 
     # unk the train, valid, and test data
-    train_unked = unk(train_split, train_vocab)
-    valid_unked = unk(valid_split, train_vocab)
-    test_unked  = unk(test_split,  train_vocab)
-    vocab = list(train_vocab) + ["<unk>"]
+    if unking:
+        for split in ["train", "valid", "test"]:
+            if split in dataset:
+                dataset[split] = unk(dataset[split], vocab, unk_token=unk_token)
+        vocab = [unk_token] + list(vocab)
+    else:
+        vocab = list(vocab)
 
-    return train_unked, valid_unked, test_unked, excluded_split, vocab
+    return dataset, vocab
 

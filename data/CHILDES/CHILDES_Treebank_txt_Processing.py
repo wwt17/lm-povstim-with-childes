@@ -47,5 +47,5 @@ def split_treebank(excluded, decl, quest):
 
     train, valid = not_test[:train_size], not_test[train_size:]
 
-    return train, valid, test
+    return {"train": train, "valid": valid, "test": test}
 

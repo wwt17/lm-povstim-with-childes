@@ -12,7 +12,6 @@ import nltk
 from childes import CHILDESCorpusReader # Edited version of nltk.corpus.reader
 from collections import defaultdict
 import random
-from random import sample
 import copy
 import shutil  
 import os
@@ -110,8 +109,8 @@ def is_treebank_file(fileid):
 # Split all the utterances into those that are
 # in the treebank and not in the treebank
 def split_treebank(files_to_utterances):
-    treebank = {file : files_to_utterances[file] for file in files_to_utterances if is_treebank_file(file)}
-    not_treebank = {file : files_to_utterances[file] for file in files_to_utterances if not is_treebank_file(file)}
+    treebank = {file: utterances for file, utterances in files_to_utterances.items() if is_treebank_file(file)}
+    not_treebank = {file: utterances for file, utterances in files_to_utterances.items() if not is_treebank_file(file)}
     return treebank, not_treebank
 
 # Input: List of sentences
@@ -131,38 +130,41 @@ def sort_dict_by_number_of_questions(x):
 # Works by sorting the files by number of questions and then excluding 
 # every 10th file so that the excluded contains only entire files and 
 # contains approximately 10% of the questions
-def hold_out(files_to_utterances):
+def hold_out(files_to_utterances, exclude_every_kth=10):
     files_to_utterances_sorted = sort_dict_by_number_of_questions(files_to_utterances)
     included = copy.deepcopy(files_to_utterances_sorted)
     excluded = {}
     for i,file in enumerate(files_to_utterances_sorted):
-        if i % 10 == 0:
+        if i % exclude_every_kth == 0:
             excluded[file] = included.pop(file)
     return included, excluded
 
 
 # Split a files_to_utterances dict into training, validation,
 # and test splits.
-# Training: 90%, valid: 5%, test: 5%
-def train_valid_test_split(files_to_utterances):
+def split(
+        files_to_utterances,
+        split_ratio={"valid": 5, "test": 5, "train": 90},
+        shuffling=True,
+):
     files_to_utterances_sorted = sort_dict_by_value_length(files_to_utterances)
     utterances = [(filename, utts) for filename, utts in files_to_utterances_sorted.items()]
-    train, valid, test = [],[],[]
+    dataset_dict = {split: [] for split in split_ratio}
+    batch_size = sum(split_ratio.values())
     count = 0
     while count < len(utterances):
-        batch_size = min(100, len(utterances) - count)
-        sample_indices = sample(range(count, count + batch_size), batch_size)
-        for i in sample_indices[10:]:
-            filename, utts = utterances[i]
-            train += [(filename, utt) for utt in utts]
-        for i in sample_indices[:5]:
-            filename, utts = utterances[i]
-            valid += [(filename, utt) for utt in utts]
-        for i in sample_indices[5:10]:
-            filename, utts = utterances[i]
-            test += [(filename, utt) for utt in utts]
-        count += 100
-    return train, valid, test
+        batch_size_ = min(batch_size, len(utterances) - count)
+        indices = list(range(count, count + batch_size_))
+        if shuffling:
+            random.shuffle(indices)
+        count_ = 0
+        for split, ratio in split_ratio.items():
+            for i in indices[count_:count_+ratio]:
+                filename, utts = utterances[i]
+                dataset_dict[split].extend((filename, utt) for utt in utts)
+            count_ += ratio
+        count += batch_size_
+    return dataset_dict
 
 # Sort a dictionary in descending order by the lengths of its values
 def sort_dict_by_value_length(x):
@@ -183,21 +185,43 @@ def remix_held_out(valid, test, excluded):
             reshuffle_size -= 1
     return valid + test[-reshuffle_size:], test[:-reshuffle_size] + excluded_utterances
 
-def shuffle(data):
-    file_to_utterances = {}
+
+def data_to_files_to_utterances(data):
+    files_to_utterances = {}
     for f,u in data:
-        if f in file_to_utterances:
-            file_to_utterances[f].append(u)
+        if f in files_to_utterances:
+            files_to_utterances[f].append(u)
         else:
-            file_to_utterances[f] = [u]
-    files_to_utterances_list = [(f,file_to_utterances[f]) for f in file_to_utterances]
-    #random.shuffle(files_to_utterances_list)
-    return [(f,utt) for f,utts in files_to_utterances_list for utt in utts]
+            files_to_utterances[f] = [u]
+    return files_to_utterances
+
+
+def files_to_utterances_to_data(file_to_utterances):
+    if isinstance(file_to_utterances, dict):
+        items = file_to_utterances.items()
+    else:
+        items = file_to_utterances
+    return [(f, utt) for f, utts in items for utt in utts]
+
+
+def shuffle(data, shuffling=False):
+    files_to_utterances = data_to_files_to_utterances(data)
+    files_to_utterances_list = list(files_to_utterances.items())
+    if shuffling:
+        random.shuffle(files_to_utterances_list)
+    return files_to_utterances_to_data(files_to_utterances_list)
     
 
-def process_childes_xml(path_to_childes="./", childes_file_name="childes-xml"):
-    print("REMEMBER THAT YOU TURNED OFF SHUFFLING!! turn it back on when you are done with checking out the results")
-    random.seed(1)
+def process_childes_xml(
+        path_to_childes="./",
+        childes_file_name="childes-xml",
+        splitting=True,
+        shuffling=False,
+        seed=1,
+):
+    if not shuffling:
+        print("REMEMBER THAT YOU TURNED OFF SHUFFLING!! turn it back on when you are done with checking out the results")
+    random.seed(seed)
 
     # Preprocessing (removes <g> tags)
     print("Starting preprocessing")
@@ -209,6 +233,9 @@ def process_childes_xml(path_to_childes="./", childes_file_name="childes-xml"):
     
     # Get utterances from all participants other than target child
     files_to_utterances = map_files_to_non_target_child_utterances(corpora)
+
+    if not splitting:
+        return {"train": files_to_utterances_to_data(files_to_utterances)}
 
     # Split the utterances into those from the treebank and
     # not from the treebank
@@ -223,15 +250,27 @@ def process_childes_xml(path_to_childes="./", childes_file_name="childes-xml"):
     included = {**not_treebank, **included_treebank} # Python 3.5 or greater
 
     # Split the pretraining data into train, valid, and test
-    train, valid, test = train_valid_test_split(included)
+    dataset_dict = split(included)
 
     # Add the excluded treebank data to the second half of `test` to make the
     # final test set, and then combind `valid` with the first half of `test` to
     # make the final validation set
-    valid_remixed, test_remixed = remix_held_out(valid, test, excluded)
+    valid_remixed, test_remixed = remix_held_out(
+        dataset_dict["valid"],
+        dataset_dict["test"],
+        excluded)
 
-    # The full list of excluded treebank uterances
-    excluded = [(filename,utt) for filename,utts in excluded.items() for utt in utts]
+    # The full list of excluded treebank utterances
+    excluded = files_to_utterances_to_data(excluded)
 
-    return shuffle(train), shuffle(valid_remixed), shuffle(test_remixed), shuffle(excluded)
+    dataset_dict = {
+        "train": dataset_dict["train"],
+        "valid": valid_remixed,
+        "test": test_remixed,
+        "excluded": excluded,
+    }
+    dataset_dict = {
+        split: shuffle(data, shuffling=shuffling)
+        for split, data in dataset_dict.items()}
+    return dataset_dict
 
